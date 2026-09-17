@@ -77,7 +77,7 @@ if uploaded_file:
                 "Group add-ons by their specific category (e.g., 'drinks category', 'extra category')."
             )
             
-            max_retries = 8
+            max_retries = 100
             response = None
             
             # Visual Countdown Retry Logic
