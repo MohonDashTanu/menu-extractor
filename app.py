@@ -103,7 +103,7 @@ if uploaded_file:
                     if "503" in error_msg or "429" in error_msg or "overloaded" in error_msg or "quota" in error_msg:
                         if attempt < max_retries - 1:
                             # Wait longer on each attempt: 3s, 5s, 7s...
-                            wait_seconds = 3 + (attempt * 2) 
+                            wait_seconds = 1
                             for countdown in range(wait_seconds, 0, -1):
                                 status_box.warning(f"Google servers are busy. Retrying in {countdown} seconds... (Attempt {attempt+1}/{max_retries})")
                                 time.sleep(1)
