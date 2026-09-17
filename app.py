@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 # --- 1. DATA STRUCTURE DEFINITION ---
 class AddOn(BaseModel):
-    category: str | None = Field(default=None, description="e.g., 'Toppings', 'Sides', 'Dressings'")
+    category: str | None = Field(default=None, description="e.g., 'Drinks Category', 'Extra Category', 'Sides'")
     name: str
     price: float | None = None
 
@@ -23,21 +23,16 @@ class MenuItem(BaseModel):
 class Menu(BaseModel):
     items: list[MenuItem]
 
-
 # --- 2. STREAMLIT PAGE SETUP ---
 st.set_page_config(layout="wide", page_title="AI Menu Extractor", page_icon="🍽️")
 st.title("🍽️ AI Menu Extractor & Review")
 
 # --- 3. CHECK FOR SECRETS ---
 if "GEMINI_API_KEY" not in st.secrets:
-    st.error(
-        "⚠️ GEMINI_API_KEY is not set in Streamlit Secrets! "
-        "Please go to App Settings > Secrets and add: GEMINI_API_KEY = \"your_api_key_here\""
-    )
+    st.error("⚠️ GEMINI_API_KEY is not set in Streamlit Secrets!")
     st.stop()
 
 api_key = st.secrets["GEMINI_API_KEY"]
-
 
 # --- 4. SIDEBAR CONTROLS ---
 with st.sidebar:
@@ -46,8 +41,6 @@ with st.sidebar:
         "Upload a menu (PDF or Image)", 
         type=["pdf", "jpg", "jpeg", "png"]
     )
-    st.caption("Supported formats: PDF, PNG, JPG, JPEG")
-
 
 # --- 5. MAIN WORKSPACE ---
 if uploaded_file:
@@ -55,17 +48,14 @@ if uploaded_file:
         st.session_state["current_file"] = uploaded_file.name
         st.session_state["menu_data"] = None
 
-    # UPDATED: Split screen [1, 2] makes the left column 33% and the right column 66%
+    # Left column (33%), Right column (66%)
     col_view, col_edit = st.columns([1, 2], gap="large")
 
     with col_view:
         st.subheader("Original Document")
         if uploaded_file.name.lower().endswith(".pdf"):
             base64_pdf = base64.b64encode(uploaded_file.getvalue()).decode("utf-8")
-            pdf_embed = (
-                f'<iframe src="data:application/pdf;base64,{base64_pdf}" '
-                f'width="100%" height="700" type="application/pdf"></iframe>'
-            )
+            pdf_embed = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="700" type="application/pdf"></iframe>'
             st.markdown(pdf_embed, unsafe_allow_html=True)
         else:
             st.image(uploaded_file, use_container_width=True)
@@ -74,88 +64,98 @@ if uploaded_file:
         st.subheader("Extracted Menu Items")
 
         if st.button("✨ Extract Menu with AI", type="primary", use_container_width=True):
-            with st.spinner("Analyzing layout, items, and add-ons... (this may take a moment)"):
+            status_box = st.empty()
+            status_box.info("Analyzing layout, items, and add-ons...")
+            
+            client = genai.Client(api_key=api_key)
+            mime_type = "application/pdf" if uploaded_file.name.lower().endswith(".pdf") else "image/jpeg"
+            
+            # Explicit prompt telling AI to associate add-ons to specific items
+            prompt = (
+                "Extract all menu items. Identify descriptions and base prices. "
+                "Critically, ensure you correctly associate each add-on with the specific menu item it belongs to. "
+                "Group add-ons by their specific category (e.g., 'drinks category', 'extra category')."
+            )
+            
+            max_retries = 8
+            response = None
+            
+            # Visual Countdown Retry Logic
+            for attempt in range(max_retries):
                 try:
-                    client = genai.Client(api_key=api_key)
-                    mime_type = "application/pdf" if uploaded_file.name.lower().endswith(".pdf") else "image/jpeg"
-                    prompt = "Extract all menu items. Identify descriptions, base prices, and group add-ons by their specific category."
+                    response = client.models.generate_content(
+                        model="gemini-3.8-flash",
+                        contents=[
+                            types.Part.from_bytes(data=uploaded_file.getvalue(), mime_type=mime_type),
+                            prompt,
+                        ],
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            response_schema=Menu,
+                            temperature=0.1,
+                        ),
+                    )
+                    status_box.empty() # Clear the status box on success
+                    break 
                     
-                    # UPDATED: Exponential Backoff Retry Logic
-                    max_retries = 5
-                    response = None
-                    
-                    for attempt in range(max_retries):
-                        try:
-                            response = client.models.generate_content(
-                                model="gemini-3.8-flash",
-                                contents=[
-                                    types.Part.from_bytes(data=uploaded_file.getvalue(), mime_type=mime_type),
-                                    prompt,
-                                ],
-                                config=types.GenerateContentConfig(
-                                    response_mime_type="application/json",
-                                    response_schema=Menu,
-                                    temperature=0.1,
-                                ),
-                            )
-                            break # Success! Break out of the retry loop.
-                            
-                        except Exception as e:
-                            error_msg = str(e).lower()
-                            # If it is a busy error, wait and retry
-                            if "503" in error_msg or "429" in error_msg or "overloaded" in error_msg:
-                                if attempt < max_retries - 1:
-                                    wait_time = 2 ** attempt  # Waits 1s, 2s, 4s, 8s...
-                                    # Show a small toast notification so the user knows it's retrying
-                                    st.toast(f"Server busy. Retrying in {wait_time} seconds (Attempt {attempt+1})...")
-                                    time.sleep(wait_time)
-                                else:
-                                    raise Exception("Google's servers are too busy right now. Please wait a minute and try again.")
-                            else:
-                                raise e # If it's a different kind of error, fail immediately
-
-                    if response:
-                        parsed = json.loads(response.text)
-                        
-                        rows = []
-                        for item in parsed.get("items", []):
-                            addons_list = []
-                            addon_categories = set()
-                            
-                            for a in item.get("add_ons", []):
-                                name_price = f"{a.get('name')} (+${a.get('price')})" if a.get("price") else a.get("name", "")
-                                addons_list.append(name_price)
-                                if a.get("category"):
-                                    addon_categories.add(a.get("category"))
-    
-                            addons_str = "; ".join(filter(None, addons_list))
-                            
-                            # UPDATED: Extract the add-on categories as a clean string
-                            addon_cat_str = ", ".join(addon_categories)
-    
-                            rows.append({
-                                "Category": item.get("category", "General"),
-                                "Item Name": item.get("name", ""),
-                                "Description": item.get("description") or "",
-                                "Price": item.get("price") if item.get("price") is not None else 0.0,
-                                "Add-on Category": addon_cat_str,
-                                "Add-ons": addons_str,
-                            })
-    
-                        st.session_state["menu_data"] = pd.DataFrame(rows)
-                        st.success("Extraction complete! You can edit, add, or delete rows below.")
-
                 except Exception as e:
-                    st.error(f"Extraction failed: {e}")
+                    error_msg = str(e).lower()
+                    if "503" in error_msg or "429" in error_msg or "overloaded" in error_msg or "quota" in error_msg:
+                        if attempt < max_retries - 1:
+                            # Wait longer on each attempt: 3s, 5s, 7s...
+                            wait_seconds = 3 + (attempt * 2) 
+                            for countdown in range(wait_seconds, 0, -1):
+                                status_box.warning(f"Google servers are busy. Retrying in {countdown} seconds... (Attempt {attempt+1}/{max_retries})")
+                                time.sleep(1)
+                            status_box.info(f"Retrying now... (Attempt {attempt+1})")
+                        else:
+                            status_box.error("Servers are completely overloaded. Please wait a few minutes and click extract again.")
+                            st.stop()
+                    else:
+                        status_box.error(f"Extraction failed: {e}")
+                        st.stop()
 
+            # Process Data into Parent/Child Rows
+            if response:
+                parsed = json.loads(response.text)
+                rows = []
+                
+                for item in parsed.get("items", []):
+                    # 1. Add the Main Item Row
+                    rows.append({
+                        "Category": item.get("category", "General"),
+                        "Item Name": item.get("name", ""),
+                        "Description": item.get("description") or "",
+                        "Price": item.get("price") if item.get("price") is not None else None,
+                        "Add-on Category": "",
+                        "Add-on Name": "",
+                        "Add-on Price": None,
+                    })
+
+                    # 2. Add a sub-row for every single Add-on that belongs to this item
+                    for a in item.get("add_ons", []):
+                        rows.append({
+                            "Category": "",
+                            "Item Name": "",
+                            "Description": "",
+                            "Price": None,
+                            "Add-on Category": a.get("category") or "Add-on",
+                            "Add-on Name": a.get("name", ""),
+                            "Add-on Price": a.get("price") if a.get("price") is not None else None,
+                        })
+
+                st.session_state["menu_data"] = pd.DataFrame(rows)
+                st.success("Extraction complete! You can edit, add, or delete rows below.")
+
+        # Editable Data Table Display
         if st.session_state.get("menu_data") is not None:
-            st.write("Double-click any cell to edit. Scroll to bottom to add missing items (`+` button).")
+            st.caption("Double-click any cell to edit. Scroll to bottom to add missing items (`+` button).")
             
             edited_df = st.data_editor(
                 st.session_state["menu_data"],
                 num_rows="dynamic",
                 use_container_width=True,
-                height=520,
+                height=600,
             )
 
             st.download_button(
