@@ -87,8 +87,9 @@ if uploaded_file:
                         "Identify descriptions, base prices, and any add-ons/customizations with their additional prices."
                     )
 
+                    # UPDATED TO GEMINI 3.8 FLASH
                     response = client.models.generate_content(
-                        model="gemini-2.5-flash",
+                        model="gemini-3.8-flash",
                         contents=[
                             types.Part.from_bytes(data=uploaded_file.getvalue(), mime_type=mime_type),
                             prompt,
@@ -105,7 +106,7 @@ if uploaded_file:
                     # Flatten into table-friendly structure
                     rows = []
                     for item in parsed.get("items", []):
-                        # Format add-ons into a readable string: "Extra Bacon ($2.00), Cheese ($1.00)"
+                        # Format add-ons into a readable string: "Extra Bacon (+$2.00); Cheese (+$1.00)"
                         addons_list = [
                             f"{a.get('name')} (+${a.get('price')})" if a.get("price") else a.get("name", "")
                             for a in item.get("add_ons", [])
